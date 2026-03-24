@@ -1,5 +1,25 @@
 package privasys:test-app;
 
+/// Analysis output format.
+enum output-format {
+    /// Return results as plain text.
+    text,
+    /// Return results as a JSON string.
+    json,
+    /// Return results as comma-separated values.
+    csv,
+}
+
+/// Configuration for the analyse-data function.
+record analysis-config {
+    /// Whether to include summary statistics (mean, min, max).
+    include-stats: bool,
+    /// Optional label to prefix the output.
+    label: option<string>,
+    /// Desired output format.
+    format: output-format,
+}
+
 world test-app {
     // ── WASI imports ──────────────────────────────────────────────
     import wasi:io/error@0.2.0;
@@ -14,10 +34,42 @@ world test-app {
     import privasys:enclave-os/https@0.1.0;
 
     // ── Exported test functions ───────────────────────────────────
+
+    /// Return a greeting from inside the enclave.
     export hello: func() -> string;
+
+    /// Generate a random number between 1 and 100 using the hardware RNG (RDRAND).
     export get-random: func() -> u32;
+
+    /// Return the current wall-clock time as seconds.nanoseconds (UTC).
     export get-time: func() -> string;
-    export kv-store: func(key: string, value: string) -> string;
-    export kv-read: func(key: string) -> string;
+
+    /// Store a value in the enclave's sealed key-value store.
+    export kv-store: func(
+        /// The key to store the value under.
+        key: string,
+        /// The value to persist (encrypted at rest).
+        value: string,
+    ) -> string;
+
+    /// Read a value from the enclave's sealed key-value store.
+    export kv-read: func(
+        /// The key to look up.
+        key: string,
+    ) -> string;
+
+    /// Fetch the latest headlines from lemonde.fr over attestable HTTPS.
     export fetch-headlines: func() -> string;
+
+    /// Analyse a list of numeric data points inside the enclave.
+    ///
+    /// Computes summary statistics over the input and returns
+    /// the result in the requested output format. All computation
+    /// happens within the hardware trust boundary.
+    export analyse-data: func(
+        /// The numeric data points to analyse.
+        values: list<f64>,
+        /// Configuration controlling output format and options.
+        config: analysis-config,
+    ) -> string;
 }

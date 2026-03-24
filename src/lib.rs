@@ -3,7 +3,7 @@
 
 //! # WASM Integration Test App
 //!
-//! Six exported functions that exercise the full Enclave OS WASM runtime:
+//! Seven exported functions that exercise the full Enclave OS WASM runtime:
 //!
 //! | Function | Tests |
 //! |----------|-------|
@@ -13,6 +13,7 @@
 //! | `kv-store` | `wasi:filesystem` → sealed KV store |
 //! | `kv-read` | `wasi:filesystem` → sealed KV store |
 //! | `fetch-headlines` | `privasys:enclave-os/https` → TLS egress |
+//! | `analyse-data` | Records, enums, options — MCP tool demo |
 
 #[allow(warnings)]
 mod bindings;
@@ -151,6 +152,55 @@ impl Guest for TestApp {
                 .map(|(i, t)| format!("{}. {}", i + 1, t))
                 .collect::<Vec<_>>()
                 .join("\n")
+        }
+    }
+
+    // ── 7. Analyse numeric data ───────────────────────────────────
+
+    fn analyse_data(values: Vec<f64>, config: bindings::AnalysisConfig) -> String {
+        if values.is_empty() {
+            return match config.format {
+                bindings::OutputFormat::Json => r#"{"error":"empty input"}"#.to_string(),
+                _ => "error: empty input".to_string(),
+            };
+        }
+
+        let count = values.len();
+        let sum: f64 = values.iter().sum();
+        let mean = sum / count as f64;
+        let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        let label = config.label.as_deref().unwrap_or("result");
+
+        match config.format {
+            bindings::OutputFormat::Text => {
+                if config.include_stats {
+                    format!(
+                        "{label}: count={count}, sum={sum:.4}, mean={mean:.4}, min={min:.4}, max={max:.4}"
+                    )
+                } else {
+                    format!("{label}: count={count}, sum={sum:.4}")
+                }
+            }
+            bindings::OutputFormat::Json => {
+                if config.include_stats {
+                    format!(
+                        r#"{{"label":"{label}","count":{count},"sum":{sum:.4},"mean":{mean:.4},"min":{min:.4},"max":{max:.4}}}"#
+                    )
+                } else {
+                    format!(
+                        r#"{{"label":"{label}","count":{count},"sum":{sum:.4}}}"#
+                    )
+                }
+            }
+            bindings::OutputFormat::Csv => {
+                if config.include_stats {
+                    format!("label,count,sum,mean,min,max\n{label},{count},{sum:.4},{mean:.4},{min:.4},{max:.4}")
+                } else {
+                    format!("label,count,sum\n{label},{count},{sum:.4}")
+                }
+            }
         }
     }
 }

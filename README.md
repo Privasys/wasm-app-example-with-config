@@ -5,7 +5,7 @@ A WebAssembly Component that exercises all major capabilities of the
 Designed as a reference implementation and integration test for validating
 new releases.
 
-**Six exported functions** cover every host import available to WASM apps
+**Seven exported functions** cover every host import available to WASM apps
 running inside an SGX enclave:
 
 | # | Function | WASI Interface | What it tests |
@@ -16,6 +16,7 @@ running inside an SGX enclave:
 | 4 | `kv-store` | `wasi:filesystem` | Write to sealed KV store |
 | 5 | `kv-read` | `wasi:filesystem` | Read from sealed KV store |
 | 6 | `fetch-headlines` | `privasys:enclave-os/https` | HTTPS egress (TLS inside SGX) |
+| 7 | `analyse-data` | *(none)* | Records, enums, options — MCP tool demo |
 
 ---
 
@@ -96,7 +97,8 @@ the SGX enclave. WASM apps are:
 5. **Called over RA-TLS** via JSON [`wasm_call`](#2-call--wasm_call) envelopes
 6. **Executed statelessly** — each call gets a fresh instance with a
    10 million instruction fuel budget
-7. **Managed at runtime** — apps can be [`listed`](#3-list--wasm_list) and [`unloaded`](#4-unload--wasm_unload) without restarting the enclave
+7. **Managed at runtime** — apps can be [`listed`](#3-list--wasm_list) and [`unloaded`](#7-unload--wasm_unload) without restarting the enclave
+8. **MCP-ready** — the enclave can emit [MCP tool manifests](#6-mcp-tools--mcp_tools) derived from WIT types and `///` doc comments
 
 ### Wire protocol
 
@@ -165,6 +167,7 @@ Send the pre-compiled `.cwasm` bytecode to the enclave. The enclave:
 | `bytes` | yes | Raw `.cwasm` bytecode as a JSON integer array |
 | `hostname` | no | SNI hostname for a dedicated per-app TLS certificate (defaults to `name`) |
 | `encryption_key` | no | Hex-encoded 32-byte AES-256 key for KV store ([BYOK](#bring-your-own-key)) |
+| `mcp_enabled` | no | Whether to expose this app as an MCP tool server (defaults to `true`) |
 
 **Response:**
 
@@ -264,7 +267,110 @@ Query all currently loaded apps with metadata.
 }
 ```
 
-### 4. Unload — `wasm_unload`
+### 5. Schema — `wasm_schema`
+
+Retrieve the typed API schema for a loaded app. Includes WIT type
+information, function signatures, and `///` doc comment descriptions.
+
+**Request:**
+
+```json
+{"wasm_schema": {"app": "test-app"}}
+```
+
+**Response (abbreviated):**
+
+```json
+{
+  "status": "schema",
+  "schema": {
+    "app_name": "test-app",
+    "mcp_enabled": true,
+    "interfaces": [
+      {
+        "name": "default",
+        "functions": [
+          {
+            "name": "hello",
+            "description": "Smoke-test export — returns a greeting with no host imports.",
+            "params": [],
+            "results": [{"name": "", "ty": "string"}]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 6. MCP Tools — `mcp_tools`
+
+Retrieve the MCP (Model Context Protocol) tool manifest for a loaded app.
+Each exported function is described as an MCP tool with a name, description
+(from `///` doc comments in the WIT definition), and a JSON Schema input
+derived from WIT parameter types.
+
+Requires `mcp_enabled` to be `true` (the default).
+
+**Request:**
+
+```json
+{"mcp_tools": {"app": "test-app"}}
+```
+
+**Response (abbreviated):**
+
+```json
+{
+  "status": "mcp_tools",
+  "manifest": {
+    "name": "test-app",
+    "tools": [
+      {
+        "name": "hello",
+        "description": "Smoke-test export — returns a greeting with no host imports.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      },
+      {
+        "name": "analyse-data",
+        "description": "Analyse a list of floating-point values with configurable output.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "values": {
+              "type": "array",
+              "items": {"type": "number"}
+            },
+            "config": {
+              "type": "object",
+              "properties": {
+                "include-stats": {"type": "boolean"},
+                "label": {"type": ["string", "null"]},
+                "format": {
+                  "type": "string",
+                  "enum": ["text", "json", "csv"]
+                }
+              },
+              "required": ["include-stats", "label", "format"]
+            }
+          },
+          "required": ["values", "config"]
+        }
+      }
+    ]
+  }
+}
+```
+
+The `///` doc comments flow from the `.wit` file → `package-docs` WASM
+custom section → enclave runtime introspection → MCP manifest. No glue
+code or separate tool definitions are needed.
+
+### 7. Unload — `wasm_unload`
 
 Remove an app from the enclave. The in-memory encryption key is destroyed,
 making any KV data written with a generated key **permanently unrecoverable**.
@@ -438,6 +544,32 @@ Uses `privasys:enclave-os/https.fetch()` to make an HTTPS GET request.
 TLS 1.3 terminates **inside the enclave** using rustls + Mozilla root CAs.
 The host only sees encrypted TCP bytes.
 
+### 7. `analyse-data` — Records, enums, options (MCP demo)
+
+```json
+{
+  "wasm_call": {
+    "app": "test-app",
+    "function": "analyse-data",
+    "params": [
+      {"type": "list<float64>", "value": [1.0, 2.5, 3.0, 4.5, 5.0]},
+      {"type": "record", "value": {
+        "include-stats": true,
+        "label": "sample",
+        "format": "json"
+      }}
+    ]
+  }
+}
+```
+
+Returns: JSON string with count, sum, mean, min, max.
+
+Exercises WIT records (`analysis-config`), enums (`output-format`), and
+options (`option<string>`). Designed to demonstrate MCP tool generation
+with complex input types — the `mcp_tools` endpoint derives a full JSON
+Schema from these WIT types automatically.
+
 ---
 
 ## Connecting with RA-TLS clients
@@ -526,7 +658,7 @@ wasm-example/
 ├── Cargo.toml                 # cdylib crate, depends on wit-bindgen-rt
 ├── README.md                  # This file
 ├── src/
-│   ├── lib.rs                 # 6 exported functions (~210 lines)
+│   ├── lib.rs                 # 7 exported functions (~250 lines)
 │   └── bindings.rs            # Auto-generated by wit-bindgen (do not edit)
 ├── tests/
 │   └── test_wasm_functions.py # Integration test suite (all 6 functions)
@@ -560,6 +692,7 @@ The full SDK includes additional interfaces (`cli`, `sockets`, `crypto`,
 | `kv-read("k")` | `"v"` | Returns previously stored value |
 | `kv-read("missing")` | `"error: key not found: missing"` | Error message |
 | `fetch-headlines` | Numbered list (1-10 items) | At least 2 headlines |
+| `analyse-data([1,2,3],{...})` | Stats string/JSON/CSV | Contains count, sum, mean |
 
 ---
 
