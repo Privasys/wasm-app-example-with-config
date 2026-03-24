@@ -3,8 +3,9 @@
 Enclave OS — WASM Integration Test Suite
 =========================================
 
-Exercises all 6 exported functions of the wasm-example app over an RA-TLS
-connection to the SGX enclave.  Outputs a clean report with pass/fail per test.
+Exercises all 7 exported functions of the wasm-example app (including complex
+types via connect_call) plus schema/MCP endpoints, over an RA-TLS connection
+to the SGX enclave.  Outputs a clean report with pass/fail per test.
 
 Usage:
     python tests/test_wasm_functions.py [CWASM_PATH]
@@ -95,6 +96,50 @@ def wasm_call(tls, app: str, function: str, params=None):
     return resp
 
 
+def connect_call(tls, app: str, function: str, body: dict):
+    inner = json.dumps(
+        {"connect_call": {"app": app, "function": function, "body": body}}
+    ).encode()
+    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
+    if "Data" in resp:
+        raw = bytes(resp["Data"])
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw.decode(errors="replace")}
+    if "Error" in resp:
+        return {"error": bytes(resp["Error"]).decode(errors="replace")}
+    return resp
+
+
+def wasm_schema(tls, app: str):
+    inner = json.dumps({"wasm_schema": {"app": app}}).encode()
+    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
+    if "Data" in resp:
+        raw = bytes(resp["Data"])
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw.decode(errors="replace")}
+    if "Error" in resp:
+        return {"error": bytes(resp["Error"]).decode(errors="replace")}
+    return resp
+
+
+def mcp_tools(tls, app: str):
+    inner = json.dumps({"mcp_tools": {"app": app}}).encode()
+    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
+    if "Data" in resp:
+        raw = bytes(resp["Data"])
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw.decode(errors="replace")}
+    if "Error" in resp:
+        return {"error": bytes(resp["Error"]).decode(errors="replace")}
+    return resp
+
+
 # ── Test definitions ──────────────────────────────────────────────────────
 
 
@@ -171,6 +216,123 @@ def test_fetch_headlines(tls):
     return False, json.dumps(r)
 
 
+# ── Complex-type tests (analyse-data: record + enum + option) ─────────────
+
+
+def test_analyse_data_json(tls):
+    """Call analyse-data with JSON output, include-stats, and a label."""
+    r = connect_call(tls, APP_NAME, "analyse-data", {
+        "values": [1.0, 2.5, 3.0, 4.5, 5.0],
+        "config": {
+            "include-stats": True,
+            "label": "sample",
+            "format": "json",
+        },
+    })
+    val = extract_return_value(r)
+    if val and isinstance(val, str):
+        try:
+            obj = json.loads(val)
+            checks = (
+                obj.get("label") == "sample"
+                and obj.get("count") == 5
+                and "mean" in obj
+                and "min" in obj
+                and "max" in obj
+            )
+            return checks, f"label={obj.get('label')} count={obj.get('count')}" if checks else val
+        except json.JSONDecodeError:
+            pass
+    return False, json.dumps(r)
+
+
+def test_analyse_data_csv(tls):
+    """Call analyse-data with CSV output and no label (option<string> = null)."""
+    r = connect_call(tls, APP_NAME, "analyse-data", {
+        "values": [10.0, 20.0],
+        "config": {
+            "include-stats": False,
+            "label": None,
+            "format": "csv",
+        },
+    })
+    val = extract_return_value(r)
+    if val and isinstance(val, str):
+        lines = val.strip().split("\n")
+        ok = len(lines) == 2 and lines[0].startswith("label,count,sum")
+        return ok, lines[1] if ok else val
+    return False, json.dumps(r)
+
+
+def test_analyse_data_text(tls):
+    """Call analyse-data with text output and stats enabled."""
+    r = connect_call(tls, APP_NAME, "analyse-data", {
+        "values": [100.0],
+        "config": {
+            "include-stats": True,
+            "label": "single",
+            "format": "text",
+        },
+    })
+    val = extract_return_value(r)
+    if val and isinstance(val, str):
+        ok = "single:" in val and "count=1" in val and "mean=" in val
+        return ok, val[:72] if ok else val
+    return False, json.dumps(r)
+
+
+def test_analyse_data_empty(tls):
+    """Call analyse-data with empty values — should return error response."""
+    r = connect_call(tls, APP_NAME, "analyse-data", {
+        "values": [],
+        "config": {
+            "include-stats": False,
+            "label": None,
+            "format": "json",
+        },
+    })
+    val = extract_return_value(r)
+    if val and isinstance(val, str):
+        ok = "error" in val.lower() or "empty" in val.lower()
+        return ok, val if ok else val
+    return False, json.dumps(r)
+
+
+# ── Schema / MCP tests ────────────────────────────────────────────────────
+
+
+def test_wasm_schema_endpoint(tls):
+    """Request the typed API schema — should contain analyse-data with record/enum types."""
+    r = wasm_schema(tls, APP_NAME)
+    if isinstance(r, dict) and "error" not in r:
+        funcs = r.get("functions", [])
+        func_names = [f.get("name") for f in funcs]
+        has_analyse = "analyse-data" in func_names
+        has_hello = "hello" in func_names
+        ok = has_analyse and has_hello and len(func_names) >= 7
+        return ok, f"{len(func_names)} functions" if ok else json.dumps(r)[:120]
+    return False, json.dumps(r)[:120]
+
+
+def test_mcp_tools_endpoint(tls):
+    """Request MCP tool manifest — analyse-data should have record/enum JSON schema."""
+    r = mcp_tools(tls, APP_NAME)
+    if isinstance(r, dict) and "error" not in r:
+        tools = r.get("tools", [])
+        tool_names = [t.get("name") for t in tools]
+        has_analyse = "analyse-data" in tool_names
+        ok = has_analyse and len(tool_names) >= 7
+        if ok:
+            # Verify the analyse-data tool has the config parameter with enum
+            analyse_tool = next(t for t in tools if t["name"] == "analyse-data")
+            schema = analyse_tool.get("inputSchema", {})
+            props = schema.get("properties", {})
+            has_config = "config" in props
+            return has_config, f"{len(tool_names)} tools, config schema present"
+        return ok, f"{len(tool_names)} tools" if tool_names else json.dumps(r)[:120]
+    return False, json.dumps(r)[:120]
+
+
 # ── Runner ────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -180,6 +342,12 @@ TESTS = [
     ("kv-store",        "KV Store (write)",  "wasi:filesystem -> sealed KV",       test_kv_store),
     ("kv-read",         "KV Store (read)",   "wasi:filesystem -> sealed KV",       test_kv_read),
     ("fetch-headlines", "HTTPS Egress",      "privasys:enclave-os/https -> TLS",   test_fetch_headlines),
+    ("analyse-data",    "Analyse (JSON)",    "connect_call: record+enum → json",   test_analyse_data_json),
+    ("analyse-data",    "Analyse (CSV)",     "connect_call: option<null> → csv",   test_analyse_data_csv),
+    ("analyse-data",    "Analyse (Text)",    "connect_call: record+enum → text",   test_analyse_data_text),
+    ("analyse-data",    "Analyse (Empty)",   "connect_call: edge case (empty)",    test_analyse_data_empty),
+    ("wasm_schema",     "API Schema",        "wasm_schema: typed export list",     test_wasm_schema_endpoint),
+    ("mcp_tools",       "MCP Tools",         "mcp_tools: JSON Schema manifest",    test_mcp_tools_endpoint),
 ]
 
 
