@@ -1,25 +1,5 @@
 package privasys:test-app;
 
-/// Analysis output format.
-enum output-format {
-    /// Return results as plain text.
-    text,
-    /// Return results as a JSON string.
-    json,
-    /// Return results as comma-separated values.
-    csv,
-}
-
-/// Configuration for the analyse-data function.
-record analysis-config {
-    /// Whether to include summary statistics (mean, min, max).
-    include-stats: bool,
-    /// Optional label to prefix the output.
-    label: option<string>,
-    /// Desired output format.
-    format: output-format,
-}
-
 world test-app {
     // ── WASI imports ──────────────────────────────────────────────
     import wasi:io/error@0.2.0;
@@ -32,6 +12,28 @@ world test-app {
 
     // ── Enclave OS platform import ────────────────────────────────
     import privasys:enclave-os/https@0.1.0;
+
+    // ── Type definitions ──────────────────────────────────────────
+
+    /// Analysis output format.
+    enum output-format {
+        /// Return results as plain text.
+        text,
+        /// Return results as a JSON string.
+        json,
+        /// Return results as comma-separated values.
+        csv,
+    }
+
+    /// Configuration for the analyse-data function.
+    record analysis-config {
+        /// Whether to include summary statistics (mean, min, max).
+        include-stats: bool,
+        /// Optional label to prefix the output.
+        label: option<string>,
+        /// Desired output format.
+        format: output-format,
+    }
 
     // ── Exported test functions ───────────────────────────────────
 
