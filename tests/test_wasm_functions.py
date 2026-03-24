@@ -15,129 +15,128 @@ Requires only Python 3.6+ stdlib.
 """
 
 import json
+import os
 import socket
 import ssl
-import struct
 import sys
 import time
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-HOST = "127.0.0.1"
-PORT = 8443
-APP_NAME = "test-app"
+HOST = os.environ.get("ENCLAVE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("ENCLAVE_PORT", "8443"))
+APP_NAME = os.environ.get("APP_NAME", "test-app")
+AUTH_TOKEN = os.environ.get("ENCLAVE_AUTH_TOKEN", "")
 
-# ── Wire protocol helpers ─────────────────────────────────────────────────
-
-
-def encode_frame(payload: bytes) -> bytes:
-    return struct.pack(">I", len(payload)) + payload
-
-
-def decode_frame(data: bytes):
-    if len(data) < 4:
-        return None, data
-    length = struct.unpack(">I", data[:4])[0]
-    if len(data) < 4 + length:
-        return None, data
-    return data[4 : 4 + length], data[4 + length :]
-
-
-def make_request(variant: str, value=None) -> bytes:
-    return json.dumps(variant if value is None else {variant: value}).encode()
+# ── HTTP/1.1 protocol helpers (enclave expects HTTP over TLS) ─────────────
 
 
 def connect():
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    raw = socket.create_connection((HOST, PORT), timeout=60)
+    raw = socket.create_connection((HOST, PORT), timeout=120)
     return ctx.wrap_socket(raw, server_hostname=HOST)
 
 
-def send_recv(tls, payload: bytes) -> bytes:
-    tls.sendall(encode_frame(payload))
+def http_post(tls, path: str, body: bytes, auth_token: str = "") -> bytes:
+    """Send an HTTP/1.1 POST and return the response body."""
+    addr = f"{HOST}:{PORT}"
+    req = f"POST {path} HTTP/1.1\r\nHost: {addr}\r\n"
+    req += f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n"
+    if auth_token:
+        req += f"Authorization: Bearer {auth_token}\r\n"
+    req += "\r\n"
+    tls.sendall(req.encode() + body)
+
+    # Read response headers
     buf = b""
-    while True:
+    while b"\r\n\r\n" not in buf:
         chunk = tls.recv(16384)
         if not chunk:
-            raise ConnectionError("Connection closed by server")
+            raise ConnectionError("Connection closed reading headers")
         buf += chunk
-        result, _ = decode_frame(buf)
-        if result is not None:
-            return result
+
+    header_end = buf.index(b"\r\n\r\n")
+    header_part = buf[:header_end].decode()
+    body_so_far = buf[header_end + 4:]
+
+    # Parse status
+    status_line = header_part.split("\r\n")[0]
+    status_code = int(status_line.split()[1])
+
+    # Parse content-length
+    content_length = 0
+    for line in header_part.split("\r\n")[1:]:
+        if line.lower().startswith("content-length:"):
+            content_length = int(line.split(":", 1)[1].strip())
+
+    # Read remaining body
+    while len(body_so_far) < content_length:
+        chunk = tls.recv(65536)
+        if not chunk:
+            break
+        body_so_far += chunk
+
+    if status_code != 200:
+        raise RuntimeError(f"HTTP {status_code}: {body_so_far.decode(errors='replace')}")
+    return body_so_far[:content_length]
+
+
+def send_data(tls, payload: bytes) -> bytes:
+    """POST /data with JSON payload (matches ratls.Client.SendData)."""
+    return http_post(tls, "/data", payload, AUTH_TOKEN)
 
 
 def wasm_load(tls, name: str, path: str):
     with open(path, "rb") as f:
         wasm_bytes = list(f.read())
-    inner = json.dumps({"wasm_load": {"name": name, "bytes": wasm_bytes}}).encode()
-    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
-    if "Data" in resp:
-        return json.loads(bytes(resp["Data"]))
-    if "Error" in resp:
-        return {"error": bytes(resp["Error"]).decode(errors="replace")}
-    return resp
+    payload = json.dumps({"wasm_load": {"name": name, "bytes": wasm_bytes}}).encode()
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
 
 
 def wasm_call(tls, app: str, function: str, params=None):
-    inner = json.dumps(
+    payload = json.dumps(
         {"wasm_call": {"app": app, "function": function, "params": params or []}}
     ).encode()
-    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
-    if "Data" in resp:
-        raw = bytes(resp["Data"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw.decode(errors="replace")}
-    if "Error" in resp:
-        return {"error": bytes(resp["Error"]).decode(errors="replace")}
-    return resp
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
 
 
 def connect_call(tls, app: str, function: str, body: dict):
-    inner = json.dumps(
+    payload = json.dumps(
         {"connect_call": {"app": app, "function": function, "body": body}}
     ).encode()
-    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
-    if "Data" in resp:
-        raw = bytes(resp["Data"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw.decode(errors="replace")}
-    if "Error" in resp:
-        return {"error": bytes(resp["Error"]).decode(errors="replace")}
-    return resp
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
 
 
 def wasm_schema(tls, app: str):
-    inner = json.dumps({"wasm_schema": {"app": app}}).encode()
-    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
-    if "Data" in resp:
-        raw = bytes(resp["Data"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw.decode(errors="replace")}
-    if "Error" in resp:
-        return {"error": bytes(resp["Error"]).decode(errors="replace")}
-    return resp
+    payload = json.dumps({"wasm_schema": {"app": app}}).encode()
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
 
 
 def mcp_tools(tls, app: str):
-    inner = json.dumps({"mcp_tools": {"app": app}}).encode()
-    resp = json.loads(send_recv(tls, make_request("Data", list(inner))))
-    if "Data" in resp:
-        raw = bytes(resp["Data"])
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"raw": raw.decode(errors="replace")}
-    if "Error" in resp:
-        return {"error": bytes(resp["Error"]).decode(errors="replace")}
-    return resp
+    payload = json.dumps({"mcp_tools": {"app": app}}).encode()
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
 
 
 # ── Test definitions ──────────────────────────────────────────────────────
@@ -305,7 +304,8 @@ def test_wasm_schema_endpoint(tls):
     """Request the typed API schema — should contain analyse-data with record/enum types."""
     r = wasm_schema(tls, APP_NAME)
     if isinstance(r, dict) and "error" not in r:
-        funcs = r.get("functions", [])
+        schema = r.get("schema", r)
+        funcs = schema.get("functions", [])
         func_names = [f.get("name") for f in funcs]
         has_analyse = "analyse-data" in func_names
         has_hello = "hello" in func_names
@@ -318,7 +318,8 @@ def test_mcp_tools_endpoint(tls):
     """Request MCP tool manifest — analyse-data should have record/enum JSON schema."""
     r = mcp_tools(tls, APP_NAME)
     if isinstance(r, dict) and "error" not in r:
-        tools = r.get("tools", [])
+        manifest = r.get("manifest", r)
+        tools = manifest.get("tools", [])
         tool_names = [t.get("name") for t in tools]
         has_analyse = "analyse-data" in tool_names
         ok = has_analyse and len(tool_names) >= 7
