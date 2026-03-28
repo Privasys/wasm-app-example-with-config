@@ -14,6 +14,8 @@
 //! | `kv-read` | `wasi:filesystem` → sealed KV store |
 //! | `fetch-headlines` | `privasys:enclave-os/https` → TLS egress |
 //! | `analyse-data` | Records, enums, options — MCP tool demo |
+//! | `auth-hello` | Authenticated-only endpoint (OIDC / FIDO2) |
+//! | `role-hello` | Role-gated endpoint (requires "hello-role") |
 
 #[allow(warnings)]
 mod bindings;
@@ -202,6 +204,48 @@ impl Guest for TestApp {
                 }
             }
         }
+    }
+
+    // ── 8. Auth Hello (authenticated-only) ─────────────────────────
+
+    fn auth_hello() -> String {
+        use bindings::privasys::enclave_os::auth;
+
+        // Auth is enforced by the runtime before this function is called.
+        // Use the auth import to read back the caller's identity and roles.
+        let caller = auth::get_caller_id().unwrap_or_else(|e| format!("unknown ({e})"));
+        let roles = auth::get_my_roles().unwrap_or_else(|_| Vec::new());
+        let ts = bindings::wasi::clocks::wall_clock::now();
+        format!(
+            "{{\"caller\":\"{caller}\",\
+             \"roles\":[{}],\
+             \"message\":\"Hello from inside the enclave — you are authenticated\",\
+             \"timestamp\":{}.{:09},\
+             \"enclave\":\"sgx\"}}",
+            roles.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(","),
+            ts.seconds, ts.nanoseconds,
+        )
+    }
+
+    // ── 9. Role Hello (requires "hello-role") ───────────────────────
+
+    fn role_hello() -> String {
+        use bindings::privasys::enclave_os::auth;
+
+        // Auth + role check is enforced by the runtime before this function
+        // is called.  Use the auth import to confirm our identity.
+        let caller = auth::get_caller_id().unwrap_or_else(|e| format!("unknown ({e})"));
+        let roles = auth::get_my_roles().unwrap_or_else(|_| Vec::new());
+        let ts = bindings::wasi::clocks::wall_clock::now();
+        format!(
+            "{{\"caller\":\"{caller}\",\
+             \"roles\":[{}],\
+             \"message\":\"Hello from inside the enclave — you have the hello-role\",\
+             \"timestamp\":{}.{:09},\
+             \"enclave\":\"sgx\"}}",
+            roles.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(","),
+            ts.seconds, ts.nanoseconds,
+        )
     }
 }
 

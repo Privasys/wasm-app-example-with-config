@@ -10,8 +10,9 @@ world test-app {
     import wasi:filesystem/types@0.2.0;
     import wasi:filesystem/preopens@0.2.0;
 
-    // ── Enclave OS platform import ────────────────────────────────
+    // ── Enclave OS platform imports ──────────────────────────────
     import privasys:enclave-os/https@0.1.0;
+    import privasys:enclave-os/auth@0.1.0;
 
     // ── Type definitions ──────────────────────────────────────────
 
@@ -38,15 +39,19 @@ world test-app {
     // ── Exported test functions ───────────────────────────────────
 
     /// Return a greeting from inside the enclave.
+    /// @auth public
     export hello: func() -> string;
 
     /// Generate a random number between 1 and 100 using the hardware RNG (RDRAND).
+    /// @auth public
     export get-random: func() -> u32;
 
     /// Return the current wall-clock time as seconds.nanoseconds (UTC).
+    /// @auth public
     export get-time: func() -> string;
 
     /// Store a value in the enclave's sealed key-value store.
+    /// @auth public
     export kv-store: func(
         /// The key to store the value under.
         key: string,
@@ -55,12 +60,14 @@ world test-app {
     ) -> string;
 
     /// Read a value from the enclave's sealed key-value store.
+    /// @auth public
     export kv-read: func(
         /// The key to look up.
         key: string,
     ) -> string;
 
     /// Fetch the latest headlines from lemonde.fr over attestable HTTPS.
+    /// @auth public
     export fetch-headlines: func() -> string;
 
     /// Analyse a list of numeric data points inside the enclave.
@@ -68,10 +75,28 @@ world test-app {
     /// Computes summary statistics over the input and returns
     /// the result in the requested output format. All computation
     /// happens within the hardware trust boundary.
+    /// @auth public
     export analyse-data: func(
         /// The numeric data points to analyse.
         values: list<f64>,
         /// Configuration controlling output format and options.
         config: analysis-config,
     ) -> string;
+
+    /// Return sensitive data that should only be accessible to
+    /// authenticated users.
+    ///
+    /// The runtime enforces the auth policy declared below before
+    /// the function is called — the app itself does not need to
+    /// check credentials.
+    /// @auth authenticated
+    export auth-hello: func() -> string;
+
+    /// Return a greeting that requires the caller to hold the
+    /// "hello-role" role.
+    ///
+    /// The runtime verifies the caller's roles before dispatch —
+    /// the function itself is role-unaware.
+    /// @auth role(hello-role)
+    export role-hello: func() -> string;
 }

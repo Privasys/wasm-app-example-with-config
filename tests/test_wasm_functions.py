@@ -3,7 +3,7 @@
 Enclave OS — WASM Integration Test Suite
 =========================================
 
-Exercises all 7 exported functions of the wasm-example app (including complex
+Exercises all 9 exported functions of the wasm-example app (including complex
 types via connect_call) plus schema/MCP endpoints, over an RA-TLS connection
 to the SGX enclave.  Outputs a clean report with pass/fail per test.
 
@@ -99,11 +99,11 @@ def wasm_load(tls, name: str, path: str):
         return {"raw": resp.decode(errors="replace")}
 
 
-def wasm_call(tls, app: str, function: str, params=None):
-    payload = json.dumps(
-        {"wasm_call": {"app": app, "function": function, "params": params or []}}
-    ).encode()
-    resp = send_data(tls, payload)
+def wasm_call(tls, app: str, function: str, params=None, app_auth=None):
+    payload = {"wasm_call": {"app": app, "function": function, "params": params or []}}
+    if app_auth is not None:
+        payload["wasm_call"]["app_auth"] = app_auth
+    resp = send_data(tls, json.dumps(payload).encode())
     try:
         return json.loads(resp)
     except json.JSONDecodeError:
@@ -132,6 +132,21 @@ def wasm_schema(tls, app: str):
 
 def mcp_tools(tls, app: str):
     payload = json.dumps({"mcp_tools": {"app": app}}).encode()
+    resp = send_data(tls, payload)
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
+
+
+def app_roles(tls, app: str, action: str, data=None, app_auth=None):
+    """Send an app_roles request for role management."""
+    payload = {"app_roles": {"app": app, "action": action}}
+    if data is not None:
+        payload["app_roles"]["data"] = data
+    if app_auth is not None:
+        payload["app_roles"]["app_auth"] = app_auth
+    payload = json.dumps(payload).encode()
     resp = send_data(tls, payload)
     try:
         return json.loads(resp)
@@ -301,7 +316,7 @@ def test_analyse_data_empty(tls):
 
 
 def test_wasm_schema_endpoint(tls):
-    """Request the typed API schema — should contain analyse-data with record/enum types."""
+    """Request the typed API schema — should contain auth-hello, role-hello and analyse-data with record/enum types."""
     r = wasm_schema(tls, APP_NAME)
     if isinstance(r, dict) and "error" not in r:
         schema = r.get("schema", r)
@@ -309,7 +324,9 @@ def test_wasm_schema_endpoint(tls):
         func_names = [f.get("name") for f in funcs]
         has_analyse = "analyse-data" in func_names
         has_hello = "hello" in func_names
-        ok = has_analyse and has_hello and len(func_names) >= 7
+        has_auth_hello = "auth-hello" in func_names
+        has_role_hello = "role-hello" in func_names
+        ok = has_analyse and has_hello and has_auth_hello and has_role_hello and len(func_names) >= 9
         return ok, f"{len(func_names)} functions" if ok else json.dumps(r)[:120]
     return False, json.dumps(r)[:120]
 
@@ -322,7 +339,7 @@ def test_mcp_tools_endpoint(tls):
         tools = manifest.get("tools", [])
         tool_names = [t.get("name") for t in tools]
         has_analyse = "analyse-data" in tool_names
-        ok = has_analyse and len(tool_names) >= 7
+        ok = has_analyse and len(tool_names) >= 9
         if ok:
             # Verify the analyse-data tool has the config parameter with enum
             analyse_tool = next(t for t in tools if t["name"] == "analyse-data")
@@ -332,6 +349,117 @@ def test_mcp_tools_endpoint(tls):
             return has_config, f"{len(tool_names)} tools, config schema present"
         return ok, f"{len(tool_names)} tools" if tool_names else json.dumps(r)[:120]
     return False, json.dumps(r)[:120]
+
+
+# ── Authentication tests ──────────────────────────────────────────────────
+
+
+def wasm_load_with_permissions(tls, name: str, path: str, permissions: dict, docs: dict | None = None):
+    """Load a WASM app with a permissions policy and/or WIT-derived auth docs."""
+    with open(path, "rb") as f:
+        wasm_bytes = list(f.read())
+    payload: dict = {"wasm_load": {"name": name, "bytes": wasm_bytes}}
+    if permissions:
+        payload["wasm_load"]["permissions"] = permissions
+    if docs:
+        payload["wasm_load"]["docs"] = docs
+    resp = send_data(tls, json.dumps(payload).encode())
+    try:
+        return json.loads(resp)
+    except json.JSONDecodeError:
+        return {"raw": resp.decode(errors="replace")}
+
+
+def test_auth_hello_no_auth(tls):
+    """Call auth-hello without a token — should be rejected."""
+    r = wasm_call(tls, APP_NAME + "-auth", "auth-hello")
+    # Should get an error about authentication required
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "authentication required" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (no token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_auth_hello_bad_token(tls):
+    """Call auth-hello with an invalid token — should be rejected."""
+    r = wasm_call(tls, APP_NAME + "-auth", "auth-hello", app_auth="invalid-token-value")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "auth failed" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (bad token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_role_hello_no_auth(tls):
+    """Call role-hello without a token — should be rejected."""
+    r = wasm_call(tls, APP_NAME + "-auth", "role-hello")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "authentication required" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (no token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_role_hello_bad_token(tls):
+    """Call role-hello with an invalid token — should be rejected."""
+    r = wasm_call(tls, APP_NAME + "-auth", "role-hello", app_auth="invalid-token-value")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "auth failed" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (bad token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_hello_public_with_permissions(tls):
+    """Call hello (public policy) on the auth-loaded app — should succeed without token."""
+    r = wasm_call(tls, APP_NAME + "-auth", "hello")
+    val = extract_return_value(r)
+    ok = val == "Hello, World!"
+    return ok, val if ok else json.dumps(r)[:80]
+
+
+# ── Role management tests ─────────────────────────────────────────────────
+
+
+def test_roles_no_auth(tls):
+    """Request my_roles without a token — should be rejected."""
+    r = app_roles(tls, APP_NAME + "-auth", "my_roles")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "authentication required" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (no token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_roles_bad_token(tls):
+    """Request my_roles with an invalid token — should be rejected."""
+    r = app_roles(tls, APP_NAME + "-auth", "my_roles", app_auth="not-a-valid-token")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "auth failed" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (bad token)"
+    return False, json.dumps(r)[:80]
+
+
+def test_roles_no_permissions_app(tls):
+    """Request roles on an app with no permissions — should fail."""
+    r = app_roles(tls, APP_NAME, "my_roles")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "no permissions" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (no permissions policy)"
+    return False, json.dumps(r)[:80]
+
+
+def test_roles_list_users_no_auth(tls):
+    """Request list_users without a token — should be rejected."""
+    r = app_roles(tls, APP_NAME + "-auth", "list_users")
+    if isinstance(r, dict):
+        msg = r.get("message", "")
+        if "authentication required" in msg.lower() or "error" in r.get("status", ""):
+            return True, "correctly rejected (no token)"
+    return False, json.dumps(r)[:80]
 
 
 # ── Runner ────────────────────────────────────────────────────────────────
@@ -349,6 +477,19 @@ TESTS = [
     ("analyse-data",    "Analyse (Empty)",   "connect_call: edge case (empty)",    test_analyse_data_empty),
     ("wasm_schema",     "API Schema",        "wasm_schema: typed export list",     test_wasm_schema_endpoint),
     ("mcp_tools",       "MCP Tools",         "mcp_tools: JSON Schema manifest",    test_mcp_tools_endpoint),
+]
+
+# Separate test list for auth-related tests (run after loading with permissions).
+AUTH_TESTS = [
+    ("auth-hello",      "Auth: No Token",    "Reject unauthenticated call",        test_auth_hello_no_auth),
+    ("auth-hello",      "Auth: Bad Token",   "Reject invalid token",               test_auth_hello_bad_token),
+    ("role-hello",      "Role: No Token",    "Reject unauthenticated call",        test_role_hello_no_auth),
+    ("role-hello",      "Role: Bad Token",   "Reject invalid token",               test_role_hello_bad_token),
+    ("hello",           "Auth: Public OK",   "Public fn works without token",      test_hello_public_with_permissions),
+    ("app_roles",       "Roles: No Token",   "Reject unauthenticated role req",    test_roles_no_auth),
+    ("app_roles",       "Roles: Bad Token",  "Reject invalid role token",          test_roles_bad_token),
+    ("app_roles",       "Roles: No Perms",   "Reject on permissionless app",       test_roles_no_permissions_app),
+    ("app_roles",       "Roles: List NoAuth","Reject list_users without auth",     test_roles_list_users_no_auth),
 ]
 
 
@@ -371,7 +512,7 @@ def main():
     print(f"  Connected: {tls.version()}, {tls.cipher()[0]}")
     print()
 
-    # Load WASM app
+    # Load WASM app (no permissions — public access)
     print(f"  Loading {wasm_path} ...")
     t0 = time.time()
     load_result = wasm_load(tls, APP_NAME, wasm_path)
@@ -382,7 +523,7 @@ def main():
     print(f"  Loaded in {load_time:.2f}s")
     print()
 
-    # Run tests
+    # Run functional tests
     SEP = "  " + "-" * 60
     print(SEP)
     print(f"  {'#':>3}  {'Test':<20} {'Result':<8}{'Details'}")
@@ -412,6 +553,60 @@ def main():
 
     print(SEP)
     print()
+
+    # Load the same app again with FIDO2 + WIT-derived auth annotations
+    print("  Loading app with FIDO2 + @auth annotations (test-app-auth) ...")
+    # OIDC/FIDO2 provider config (operator concern)
+    auth_permissions = {
+        "version": 1,
+        "fido2": True,
+    }
+    # Auth policy from WIT @auth annotations (injected via docs)
+    auth_docs = {
+        "auth:__default__": "authenticated",
+        "auth:hello": "public",
+        "auth:auth-hello": "authenticated",
+        "auth:role-hello": "role(hello-role)",
+    }
+    t0 = time.time()
+    auth_load = wasm_load_with_permissions(
+        tls, APP_NAME + "-auth", wasm_path, auth_permissions, docs=auth_docs
+    )
+    auth_load_time = time.time() - t0
+    if "error" in (auth_load if isinstance(auth_load, dict) else {}):
+        print(f"  [WARN] Auth load failed: {auth_load}")
+        print("  Skipping auth tests.")
+    else:
+        print(f"  Loaded in {auth_load_time:.2f}s")
+        print()
+
+        # Run auth tests
+        print(SEP)
+        print(f"  {'#':>3}  {'Test':<20} {'Result':<8}{'Details'}")
+        print(SEP)
+
+        offset = len(TESTS)
+        for j, (func_name, label, desc, test_fn) in enumerate(AUTH_TESTS, 1):
+            t0 = time.time()
+            try:
+                ok, detail = test_fn(tls)
+            except Exception as e:
+                ok, detail = False, f"Exception: {e}"
+            elapsed = time.time() - t0
+
+            icon = "\u2714" if ok else "\u274c"
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+
+            idx = offset + j
+            detail_str = str(detail)[:40]
+            print(f"  {idx:>3}  {label:<20} {icon}  {detail_str}")
+            results.append((idx, func_name, label, desc, ok, detail, elapsed))
+
+        print(SEP)
+        print()
 
     # Summary
     total = passed + failed
