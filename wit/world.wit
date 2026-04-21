@@ -83,6 +83,22 @@ world test-app {
         config: analysis-config,
     ) -> string;
 
+    /// Result returned by the auth-gated hello functions.
+    record auth-hello-result {
+        /// Caller's identity (sub) as seen by the enclave.
+        caller: string,
+        /// Roles the caller holds.
+        roles: list<string>,
+        /// Human-readable greeting from inside the enclave.
+        message: string,
+        /// Wall-clock seconds since the Unix epoch.
+        timestamp-seconds: u64,
+        /// Sub-second nanoseconds component of the timestamp.
+        timestamp-nanos: u32,
+        /// TEE technology this enclave runs on (e.g. "sgx", "tdx").
+        enclave: string,
+    }
+
     /// Return sensitive data that should only be accessible to
     /// authenticated users.
     ///
@@ -90,7 +106,7 @@ world test-app {
     /// the function is called — the app itself does not need to
     /// check credentials.
     /// @auth authenticated
-    export auth-hello: func() -> string;
+    export auth-hello: func() -> auth-hello-result;
 
     /// Return a greeting that requires the caller to hold the
     /// "hello-role" role.
@@ -98,5 +114,5 @@ world test-app {
     /// The runtime verifies the caller's roles before dispatch —
     /// the function itself is role-unaware.
     /// @auth role(hello-role)
-    export role-hello: func() -> string;
+    export role-hello: func() -> auth-hello-result;
 }
