@@ -216,13 +216,13 @@ impl Guest for TestApp {
         let caller = auth::get_caller_id().unwrap_or_else(|e| format!("unknown ({e})"));
         let roles = auth::get_my_roles().unwrap_or_else(|_| Vec::new());
         let ts = bindings::wasi::clocks::wall_clock::now();
+        let roles_str = if roles.is_empty() { "(none)".to_string() } else { roles.join(", ") };
         format!(
-            "{{\"caller\":\"{caller}\",\
-             \"roles\":[{}],\
-             \"message\":\"Hello from inside the enclave — you are authenticated\",\
-             \"timestamp\":{}.{:09},\
-             \"enclave\":\"sgx\"}}",
-            roles.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(","),
+            "Hello from inside the enclave — you are authenticated.\n\
+             caller: {caller}\n\
+             roles: {roles_str}\n\
+             timestamp: {}.{:09}\n\
+             enclave: sgx",
             ts.seconds, ts.nanoseconds,
         )
     }
@@ -237,13 +237,13 @@ impl Guest for TestApp {
         let caller = auth::get_caller_id().unwrap_or_else(|e| format!("unknown ({e})"));
         let roles = auth::get_my_roles().unwrap_or_else(|_| Vec::new());
         let ts = bindings::wasi::clocks::wall_clock::now();
+        let roles_str = if roles.is_empty() { "(none)".to_string() } else { roles.join(", ") };
         format!(
-            "{{\"caller\":\"{caller}\",\
-             \"roles\":[{}],\
-             \"message\":\"Hello from inside the enclave — you have the hello-role\",\
-             \"timestamp\":{}.{:09},\
-             \"enclave\":\"sgx\"}}",
-            roles.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(","),
+            "Hello from inside the enclave — you have the hello-role.\n\
+             caller: {caller}\n\
+             roles: {roles_str}\n\
+             timestamp: {}.{:09}\n\
+             enclave: sgx",
             ts.seconds, ts.nanoseconds,
         )
     }
