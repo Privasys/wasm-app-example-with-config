@@ -123,26 +123,29 @@ impl Guest for TestApp {
     fn fetch_headlines() -> String {
         use bindings::privasys::enclave_os::https;
 
-        // HTTPS GET — TLS terminates inside the enclave
-        let resp = match https::fetch(
-            0, // GET
-            "https://www.lemonde.fr",
-            &[
+        // HTTPS GET — TLS terminates inside the enclave.
+        // No RA-TLS policy, Mozilla root bundle.
+        let request = https::Request {
+            method: https::Method::Get,
+            url: "https://www.lemonde.fr".into(),
+            headers: vec![
                 ("User-Agent".into(), "wasm-test-app/1.0".into()),
                 ("Accept".into(), "text/html".into()),
             ],
-            None,
-        ) {
+            body: None,
+            ratls: None,
+            ca_roots_der: None,
+        };
+        let resp = match https::fetch(&request) {
             Ok(r) => r,
             Err(e) => return format!("error: {e}"),
         };
 
-        let (status, _headers, body) = resp;
-        if status != 200 {
-            return format!("error: HTTP {status}");
+        if resp.status != 200 {
+            return format!("error: HTTP {}", resp.status);
         }
 
-        let html = String::from_utf8_lossy(&body);
+        let html = String::from_utf8_lossy(&resp.body);
         let titles = extract_titles(&html, 10);
 
         if titles.is_empty() {
