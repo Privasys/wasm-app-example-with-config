@@ -13,6 +13,8 @@ world test-app {
     // ── Enclave OS platform imports ──────────────────────────────
     import privasys:enclave-os/https@0.1.0;
     import privasys:enclave-os/auth@0.1.0;
+    import privasys:enclave-os/crypto@0.1.0;
+    import privasys:enclave-os/attestation@0.1.0;
 
     // ── Type definitions ──────────────────────────────────────────
 
@@ -115,4 +117,31 @@ world test-app {
     /// the function itself is role-unaware.
     /// @auth role(hello-role)
     export role-hello: func() -> auth-hello-result;
+
+    // ── Configure-then-freeze pattern ─────────────────────────────
+    //
+    // The `@config-api` decoration on `configure` declares it as the
+    // app's initial-configuration entrypoint. The runtime:
+    //   1. Freezes every other export with the error
+    //      "app is awaiting initial configuration" until `configure`
+    //      runs successfully and the app calls `set-config-complete`.
+    //   2. Restricts `configure` itself to the app *owner* (the
+    //      deployer who installed the app, holding the platform
+    //      `manager` role) regardless of any `@auth` annotation.
+    //   3. Re-arms the freeze on every enclave restart, so the
+    //      deployer must re-inject the secret before traffic flows.
+
+    /// Accept an API key from the deployer, store it to the sealed
+    /// KV store, advertise its SHA-256 on the per-app RA-TLS leaf
+    /// at OID `1.3.6.1.4.1.65230.3.5.1`, then unfreeze the app so
+    /// the other exports become callable.
+    /// @config-api
+    export configure: func(api-key: string) -> result<_, string>;
+
+    /// Returns the API key length only (proof the configured secret
+    /// is in scope) iff the app has been configured. Calling this
+    /// before `configure` succeeds yields the freeze-gate error from
+    /// the runtime.
+    /// @auth public
+    export protected-call: func() -> result<string, string>;
 }

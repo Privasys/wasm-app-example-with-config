@@ -570,6 +570,54 @@ options (`option<string>`). Designed to demonstrate MCP tool generation
 with complex input types — the `mcp_tools` endpoint derives a full JSON
 Schema from these WIT types automatically.
 
+### 8. `configure` — Configure-then-freeze (`config_api`)
+
+```json
+{
+  "wasm_call": {
+    "app": "test-app",
+    "function": "configure",
+    "params": [{"type": "string", "value": "sk_live_abc123"}]
+  }
+}
+```
+
+Returns: `null` (success) or an error string.
+
+This function is declared as the app's `config_api` at deploy time.
+The runtime keeps every other export blocked with the error
+`"app is awaiting initial configuration"` until `configure` returns
+`Ok`. The freeze is re-armed on every enclave restart, so the
+deployer must re-supply the secret before the app serves traffic
+again.
+
+What `configure` does inside the enclave:
+
+1. Stores the supplied API key in the per-app sealed KV store.
+2. Computes `SHA-256(api_key)` via `privasys:enclave-os/crypto`.
+3. Calls `set-attestation-extension(1, hash)` so that the per-app
+   RA-TLS leaf certificate advertises the configured-secret hash
+   under OID `1.3.6.1.4.1.65230.3.5.1` on the next handshake.
+4. Calls `set-config-complete()` to lift the freeze gate.
+
+A verifying client can then prove it is talking to an enclave that
+saw exactly the API key it delivered, without ever exposing the key
+itself.
+
+### 9. `protected-call` — Requires the API key
+
+```json
+{"wasm_call": {"app": "test-app", "function": "protected-call", "params": []}}
+```
+
+Returns: `"ok: api_key length = N"` once the app is configured.
+
+Calling this before `configure` succeeds returns the runtime freeze
+error. Calling it after a fresh enclave boot (without re-running
+`configure`) returns the same freeze error — even though the API key
+is still persisted in the sealed KV store, the freeze flag is in
+memory and resets on every restart.
+
 ---
 
 ## Connecting with RA-TLS clients

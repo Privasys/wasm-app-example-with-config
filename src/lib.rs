@@ -50,72 +50,16 @@ impl Guest for TestApp {
     // ── 4. Store data in KV ───────────────────────────────────────
 
     fn kv_store(key: String, value: String) -> String {
-        use bindings::wasi::filesystem::{preopens, types as fs};
-
-        // Get the preopened root directory (backed by sealed KV store)
-        let dirs = preopens::get_directories();
-        if dirs.is_empty() {
-            return "error: no preopened directories".to_string();
+        match kv::write(&key, &value) {
+            Ok(()) => format!("stored: {key}"),
+            Err(e) => format!("error: {e}"),
         }
-        let root = &dirs[0].0;
-
-        // Open (or create) the file — each "file" is a KV entry
-        let fd = match root.open_at(
-            fs::PathFlags::empty(),
-            &key,
-            fs::OpenFlags::CREATE | fs::OpenFlags::TRUNCATE,
-            fs::DescriptorFlags::WRITE,
-        ) {
-            Ok(fd) => fd,
-            Err(e) => return format!("error: open failed: {e:?}"),
-        };
-
-        // Write the value
-        if let Err(e) = fd.write(value.as_bytes(), 0) {
-            return format!("error: write failed: {e:?}");
-        }
-
-        // Sync flushes the encrypted data to the host KV store
-        if let Err(e) = fd.sync_data() {
-            return format!("error: sync failed: {e:?}");
-        }
-
-        format!("stored: {key}")
     }
 
-    // ── 5. Read from KV ───────────────────────────────────────────
+    // ── 5. Read from KV ─────────────────────────────────────────
 
     fn kv_read(key: String) -> String {
-        use bindings::wasi::filesystem::{preopens, types as fs};
-
-        let dirs = preopens::get_directories();
-        if dirs.is_empty() {
-            return "error: no preopened directories".to_string();
-        }
-        let root = &dirs[0].0;
-
-        let fd = match root.open_at(
-            fs::PathFlags::empty(),
-            &key,
-            fs::OpenFlags::empty(),
-            fs::DescriptorFlags::READ,
-        ) {
-            Ok(fd) => fd,
-            Err(fs::ErrorCode::NoEntry) => return format!("error: key not found: {key}"),
-            Err(e) => return format!("error: open failed: {e:?}"),
-        };
-
-        let stat = match fd.stat() {
-            Ok(s) => s,
-            Err(e) => return format!("error: stat failed: {e:?}"),
-        };
-
-        let (data, _eof) = match fd.read(stat.size, 0) {
-            Ok(r) => r,
-            Err(e) => return format!("error: read failed: {e:?}"),
-        };
-
-        String::from_utf8(data).unwrap_or_else(|_| "(binary data)".to_string())
+        kv::read(&key).unwrap_or_else(|| format!("error: key not found: {key}"))
     }
 
     // ── 6. Fetch headlines from lemonde.fr ─────────────────────────
@@ -247,6 +191,113 @@ impl Guest for TestApp {
             timestamp_nanos: ts.nanoseconds,
             enclave: "sgx".to_string(),
         }
+    }
+
+    // ── 10. Configure (config_api function) ────────────────────────
+    //
+    // Declared in the app's deployment manifest as
+    //   config_api = "configure"
+    // so the runtime keeps every other export frozen until this
+    // function returns Ok. Re-frozen on every enclave restart.
+
+    fn configure(api_key: String) -> Result<(), String> {
+        use bindings::privasys::enclave_os::{attestation, crypto};
+
+        if api_key.is_empty() {
+            return Err("api_key must be non-empty".into());
+        }
+
+        // 1. Persist the secret to the per-app sealed KV store. It
+        //    survives enclave restart and is not visible to the
+        //    host. We use the same `wasi:filesystem` path the rest
+        //    of the app uses to keep storage uniform.
+        kv::write("api_key", &api_key)?;
+
+        // 2. Hash the secret and advertise the hash on the per-app
+        //    RA-TLS leaf certificate. Verifying clients can prove
+        //    the running app saw exactly the key they delivered
+        //    without exposing the key itself.
+        let hash = crypto::digest(crypto::DigestAlgorithm::Sha256, api_key.as_bytes())
+            .map_err(|e| format!("digest failed: {e}"))?;
+        attestation::set_attestation_extension(1, &hash)
+            .map_err(|e| format!("set-attestation-extension failed: {e}"))?;
+
+        // 3. Lift the freeze gate. Subsequent calls to
+        //    `protected-call` (or any other export) succeed.
+        attestation::set_config_complete()
+            .map_err(|e| format!("set-config-complete failed: {e}"))?;
+
+        Ok(())
+    }
+
+    // ── 11. Protected Call (requires configured api-key) ───────────
+
+    fn protected_call() -> Result<String, String> {
+        // The freeze gate guarantees this function only dispatches
+        // after `configure` has succeeded at least once since boot.
+        // We additionally require the secret to be present in the
+        // sealed KV store — defence in depth in case `configure`
+        // partially succeeded on a previous boot.
+        let key = kv::read("api_key")
+            .ok_or_else(|| "api_key not configured".to_string())?;
+        Ok(format!("ok: api_key length = {}", key.len()))
+    }
+}
+
+// ── Sealed-KV helpers ─────────────────────────────────────────────
+//
+// Every preopened directory the enclave exposes to the app is a
+// per-app sealed KV store, so there is no observable difference
+// between "secret" and "non-secret" reads/writes at this layer —
+// one pair of helpers serves both. They live in their own module
+// to avoid shadowing the exported `kv_store` / `kv_read` methods
+// (the exported names are forced by the WIT contract).
+
+mod kv {
+    use crate::bindings::wasi::filesystem::{preopens, types as fs};
+
+    pub fn write(key: &str, value: &str) -> Result<(), String> {
+        // Get the preopened root directory (backed by sealed KV store)
+        let dirs = preopens::get_directories();
+        if dirs.is_empty() {
+            return Err("no preopened directories".into());
+        }
+        let root = &dirs[0].0;
+
+        // Open (or create) the file — each "file" is a KV entry
+        let fd = root.open_at(
+            fs::PathFlags::empty(),
+            key,
+            fs::OpenFlags::CREATE | fs::OpenFlags::TRUNCATE,
+            fs::DescriptorFlags::WRITE,
+        ).map_err(|e| format!("open failed: {e:?}"))?;
+
+        // Write the value
+        fd.write(value.as_bytes(), 0).map_err(|e| format!("write failed: {e:?}"))?;
+
+        // Sync flushes the encrypted data to the host KV store
+        fd.sync_data().map_err(|e| format!("sync failed: {e:?}"))?;
+
+        Ok(())
+    }
+
+    pub fn read(key: &str) -> Option<String> {
+        let dirs = preopens::get_directories();
+        if dirs.is_empty() {
+            return None;
+        }
+        let root = &dirs[0].0;
+
+        let fd = root.open_at(
+            fs::PathFlags::empty(),
+            key,
+            fs::OpenFlags::empty(),
+            fs::DescriptorFlags::READ,
+        ).ok()?;
+
+        let stat = fd.stat().ok()?;
+        let (data, _) = fd.read(stat.size, 0).ok()?;
+        String::from_utf8(data).ok()
     }
 }
 
