@@ -68,9 +68,9 @@ sudo systemctl status aesmd
 # Rust (nightly required for SGX)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
-rustup install nightly-2025-12-01
-rustup default nightly-2025-12-01
-rustup component add rust-src --toolchain nightly-2025-12-01
+rustup install nightly-2026-06-21
+rustup default nightly-2026-06-21
+rustup component add rust-src --toolchain nightly-2026-06-21
 
 # Build essentials
 sudo apt-get install -y build-essential cmake git pkg-config
