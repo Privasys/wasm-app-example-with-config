@@ -1,9 +1,16 @@
-# WASM App Example
+# WASM App Example (with config)
 
 A WebAssembly Component that exercises all major capabilities of the
-[Enclave OS (Mini)](https://github.com/Privasys/enclave-os-mini) WASM runtime.
-Designed as a reference implementation and integration test for validating
-new releases.
+[Enclave OS (Mini)](https://github.com/Privasys/enclave-os-mini) WASM runtime,
+**including the configure-then-freeze pattern**: a secret is injected at deploy
+time, its hash is advertised on the per-app RA-TLS leaf, and every other export
+stays frozen until the app is configured. Designed as a reference implementation
+and integration test for validating new releases.
+
+> New to the platform? Start with the simpler
+> **[wasm-app-example](https://github.com/Privasys/wasm-app-example)** — the same
+> app without the configuration step or freeze gate, so it deploys and runs
+> straight away. Come back here when you need to inject a secret at deploy time.
 
 **Seven exported functions** cover every host import available to WASM apps
 running inside an SGX enclave:

@@ -1,0 +1,12 @@
+{
+    "store": {
+        "tagline": "The WASM starter app plus configure-then-freeze: inject a secret at deploy time, attested and gated.",
+        "category": "Developer Tools",
+        "keywords": "wasm, webassembly, example, configure, freeze gate, secret injection, ra-tls, attestation, enclave os, sgx, confidential computing, sealed storage, mcp",
+        "website_url": "https://privasys.org",
+        "support_email": "contact@privasys.org",
+        "privacy_url": "https://privasys.org/legal/privacy/",
+        "tos_url": "https://privasys.org/legal/terms/",
+        "description": "WASM Example (with config) is the reference application for the configure-then-freeze pattern on the Privasys WASM runtime. It does everything the basic WASM Example does — sealed storage, hardware randomness, attestable HTTPS egress, a typed MCP tool, authenticated and role-gated endpoints — and adds a deploy-time configuration step.\n\nCONFIGURE-THEN-FREEZE\n- On deploy, the runtime keeps every export frozen until the owner calls configure with a secret (for example an API key).\n- configure persists the secret to the per-app sealed key-value store, hashes it, and advertises the hash on the per-app RA-TLS leaf certificate. Verifying clients can prove the running app saw exactly the key that was delivered, without ever seeing the key itself.\n- Once configuration succeeds the freeze lifts and the other endpoints become callable. The gate re-arms on every enclave restart, so the secret must be re-injected before traffic flows again.\n\nWHO IT IS FOR\nDevelopers who need to provision a secret or trust anchor into an enclave app at deploy time and have that provisioning attested. If you are just getting started, deploy the simpler WASM Example first."
+    }
+}
