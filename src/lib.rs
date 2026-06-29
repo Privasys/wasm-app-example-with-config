@@ -222,11 +222,11 @@ impl Guest for TestApp {
         attestation::set_attestation_extension(1, &hash)
             .map_err(|e| format!("set-attestation-extension failed: {e}"))?;
 
-        // 3. Lift the freeze gate. Subsequent calls to
-        //    `protected-call` (or any other export) succeed.
-        attestation::set_config_complete()
-            .map_err(|e| format!("set-config-complete failed: {e}"))?;
-
+        // 3. Return Ok. The runtime lifts the freeze gate automatically on a
+        //    successful return from the config_api function (mirroring the
+        //    container manager, which lifts on the first 2xx). The app no
+        //    longer calls set-config-complete: the gate is owned by the
+        //    runtime/routing layer, not the app.
         Ok(())
     }
 

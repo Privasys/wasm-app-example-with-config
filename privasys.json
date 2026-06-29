@@ -1,12 +1,59 @@
 {
+    "tools": [
+        {
+            "name": "configure",
+            "role": "config",
+            "description": "Inject the API key the app needs before it serves traffic. The runtime keeps every other export frozen until this returns Ok, then lifts the gate automatically (the app does not call set-config-complete). The key is persisted to the per-app sealed KV store and SHA-256(key) is committed to the RA-TLS leaf at OID 1.3.6.1.4.1.65230.3.5.1.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "api_key": {
+                        "type": "string",
+                        "description": "Secret API key.",
+                        "x-privasys": { "secret": true, "label": "API key" }
+                    }
+                },
+                "required": ["api_key"]
+            }
+        },
+        {
+            "name": "protected-call",
+            "role": "action",
+            "description": "Returns the configured API key length once the app has been configured. Frozen (awaiting initial configuration) until configure succeeds.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "kv-store",
+            "description": "Write a value to the per-app sealed KV store.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Key." },
+                    "value": { "type": "string", "description": "Value." }
+                },
+                "required": ["key", "value"]
+            }
+        },
+        {
+            "name": "kv-read",
+            "description": "Read a value previously written with kv-store.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "description": "Key." }
+                },
+                "required": ["key"]
+            }
+        }
+    ],
     "store": {
-        "tagline": "The WASM starter app plus configure-then-freeze: inject a secret at deploy time, attested and gated.",
+        "tagline": "The WASM starter app plus typed config + actions: inject a secret at deploy time, attested and gated, with the gate owned by the runtime.",
         "category": "Developer Tools",
-        "keywords": "wasm, webassembly, example, configure, freeze gate, secret injection, ra-tls, attestation, enclave os, sgx, confidential computing, sealed storage, mcp",
+        "keywords": "wasm, webassembly, example, configure, freeze gate, actions, secret injection, ra-tls, attestation, enclave os, sgx, confidential computing, sealed storage, mcp",
         "website_url": "https://privasys.org",
         "support_email": "contact@privasys.org",
         "privacy_url": "https://privasys.org/legal/privacy/",
         "tos_url": "https://privasys.org/legal/terms/",
-        "description": "WASM Example (with config) is the reference application for the configure-then-freeze pattern on the Privasys WASM runtime. It does everything the basic WASM Example does — sealed storage, hardware randomness, attestable HTTPS egress, a typed MCP tool, authenticated and role-gated endpoints — and adds a deploy-time configuration step.\n\nCONFIGURE-THEN-FREEZE\n- On deploy, the runtime keeps every export frozen until the owner calls configure with a secret (for example an API key).\n- configure persists the secret to the per-app sealed key-value store, hashes it, and advertises the hash on the per-app RA-TLS leaf certificate. Verifying clients can prove the running app saw exactly the key that was delivered, without ever seeing the key itself.\n- Once configuration succeeds the freeze lifts and the other endpoints become callable. The gate re-arms on every enclave restart, so the secret must be re-injected before traffic flows again.\n\nWHO IT IS FOR\nDevelopers who need to provision a secret or trust anchor into an enclave app at deploy time and have that provisioning attested. If you are just getting started, deploy the simpler WASM Example first."
+        "description": "WASM Example (with config) is the reference application for the typed config + actions capabilities on the Privasys WASM runtime. It does everything the basic WASM Example does (sealed storage, hardware randomness, attestable HTTPS egress, a typed MCP tool, authenticated and role-gated endpoints) and adds the configure-then-freeze pattern.\n\nCONFIGURE-THEN-FREEZE (runtime-gated)\nThe manifest tags the configure export role:config. On deploy the runtime keeps every other export frozen until configure returns Ok, then lifts the gate automatically. The app contains NO freeze logic and does NOT call set-config-complete: the gate is owned by the runtime/routing layer. The gate re-arms on every enclave restart.\n\nconfigure persists the secret to the per-app sealed KV store, hashes it, and advertises the hash on the per-app RA-TLS leaf so verifying clients can prove the running app saw exactly the delivered key without seeing it.\n\nWHO IT IS FOR\nDevelopers who need to provision a secret or trust anchor into an enclave app at deploy time and have that provisioning attested."
     }
 }
