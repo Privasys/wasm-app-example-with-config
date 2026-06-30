@@ -591,12 +591,13 @@ Schema from these WIT types automatically.
 
 Returns: `null` (success) or an error string.
 
-This function is declared as the app's `config_api` at deploy time.
-The runtime keeps every other export blocked with the error
-`"app is awaiting initial configuration"` until `configure` returns
-`Ok`. The freeze is re-armed on every enclave restart, so the
-deployer must re-supply the secret before the app serves traffic
-again.
+This export is the app's `config_api`, derived from the manifest tool tagged
+`role: "config"` (image-bound — no manual `PATCH /config-api`). The runtime
+keeps every other export blocked with the error
+`"app is awaiting initial configuration"` and **auto-lifts the gate on a
+successful (`Ok`) return** from `configure` (wasm-v0.36.0+) — the app does not
+call `set-config-complete`. The freeze is re-armed on every enclave restart, so
+the deployer must re-supply the secret before the app serves traffic again.
 
 What `configure` does inside the enclave:
 
@@ -605,7 +606,8 @@ What `configure` does inside the enclave:
 3. Calls `set-attestation-extension(1, hash)` so that the per-app
    RA-TLS leaf certificate advertises the configured-secret hash
    under OID `1.3.6.1.4.1.65230.3.5.1` on the next handshake.
-4. Calls `set-config-complete()` to lift the freeze gate.
+4. Returns `Ok`. The runtime lifts the freeze gate automatically; the app owns
+   no freeze logic.
 
 A verifying client can then prove it is talking to an enclave that
 saw exactly the API key it delivered, without ever exposing the key
